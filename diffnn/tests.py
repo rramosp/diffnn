@@ -2,18 +2,23 @@
 # -------------------------------------------------------------------------------------
 # TESTING
 # -------------------------------------------------------------------------------------
+import numpy as np
+import torch
 import sympy
+from progressbar import progressbar as pbar
 from einsteinpy.symbolic import MetricTensor, ChristoffelSymbols, RiemannCurvatureTensor, RicciTensor
-from . import diffnn
+from . import metrics
 
 def create_expr(symbol):
     """ creates an expression of a single symbol """
     
     pkgprefix = "##PKG##"
     
-    funcs = ['sin', 'cos', 'exp', 'log', None]
-    funcs = ['sin', 'cos', None]
-    powers = [0, 1]
+    funcs = ['sin', None]
+    powers = [0, 1, 2]
+
+    #funcs = [None]
+    #powers = [0, 1, 2]
     
     f = np.random.choice(funcs)
     p = np.random.choice(powers)
@@ -80,7 +85,7 @@ def create_symetric_lists(z):
     return r
 
 
-class RiemmanianMetricTest(diffnn.RiemmanianMetric):
+class RiemmanianMetricTest(metrics.RiemmanianMetric):
 
     def __init__(self, motest):
         """
@@ -107,12 +112,18 @@ self._metric = _tmp_metric
         """
         exec(self.fun_expr)
         
+
     def metric(self, x):
-        return self._metric(x)
+        if len(x.shape)==1:
+            return self._metric(x)
+        if len(x.shape)==2:
+            return torch.stack([self._metric(xi) for xi in x])
+        else:
+            raise ValueError(f"x must be 1D (a single element) or 2D (a batch of elements), but found shape {x.shape}")
     
 class MainTest:
     
-    def __init__(self, dims=3):
+    def __init__(self, dims=3, init_sympy_torch=True):
         self.dims = dims
 
         # creates a metric tensor with random expressions
@@ -123,6 +134,10 @@ class MainTest:
 
         exprs = [asseble_expr(self.symbols) for _ in range(k)]
         self.metric_tensor_expressions = create_symetric_lists(exprs)
+
+        if init_sympy_torch:
+            self.torch_init()
+            self.sympy_init()
         
     def sympy_init(self):
         
@@ -131,7 +146,7 @@ class MainTest:
         
         # init sympy symbols
         sympy_init = f"""
-{','.join(symbols)} = sympy.symbols({symbols})
+{','.join(self.symbols)} = sympy.symbols({self.symbols})
         """
         exec(sympy_init)
 
@@ -142,12 +157,62 @@ class MainTest:
             expr += "[" + ",".join(row) + "],\n"
         expr += "]), ("+",".join(self.symbols)+"))"        
         exec(expr)
-        
+        print ("metric tensor is", self.sympy_mt)
         # compute symbolic christoffels
         print ("computing symbolic christoffels in sympy", flush=True)
-        expr = "self.sympy_christoffels = ChristoffelSymbols.from_metric(self.sympy_mt).tensor()"
+        expr = "self.sympy_christoffels = ChristoffelSymbols.from_metric(self.sympy_mt)"
         exec(expr)
         
     def torch_init(self):
+        print ("initializing torch graphs", flush=True)        
+        self.torch_metric = RiemmanianMetricTest(self)
+
+
+def test_christoffels(self, nsamples=100):
+    print ("testing christoffels torch and sympy implementations", flush=True)
+    vals_mean = []    
+    for _ in pbar(range(nsamples)):
+        x = torch.rand(size=(self.dims,), requires_grad=True)
+        substitution = {s:v for s,v in zip(self.symbols, x.detach().numpy())}
+        cs = np.r_[self.sympy_christoffels.tensor().subs(substitution)].astype(np.float32)
+        ct = self.torch_metric.christoffels(x).detach().numpy()
+        if not np.allclose(cs, ct, atol=1e-3):
+            print (f"failed at x {x.detach().numpy()}!!")
+            print ("christofels evaluated by sympy\n", cs)
+            print ("christofels evaluated by torch\n", ct)
+            print (f"avg values abs difference {np.mean(np.abs(cs-ct)):.6f}")
+            break
+        vals_mean.append(cs.mean())
+    vals_mean = np.r_[vals_mean]
+    print (f"mean value {vals_mean.mean():.4f}, std value {vals_mean.std():.4f}")
         
-        self.torch_metric_test = RiemmanianMetricTest(self)
+def test_metric_tensor(self, nsamples=100):
+    print ("testing metric tensors torch and sympy implementations", flush=True)
+    vals_mean = []
+    for _ in pbar(range(nsamples)):
+        x = torch.rand(size=(self.dims,), requires_grad=True)
+        substitution = {s:v for s,v in zip(self.symbols, x.detach().numpy())}
+        cs = np.r_[self.sympy_mt.tensor().subs(substitution)].astype(np.float32)
+        ct = self.torch_metric.metric(x).detach().numpy()
+        if not np.allclose(cs, ct, atol=1e-3):
+            print (f"failed at x {x.detach().numpy()}!!")
+            print ("metric tensor evaluated by sympy\n", cs)
+            print ("metric tensor evaluated by torch\n", ct)
+            print (f"avg values abs difference {np.mean(np.abs(cs-ct)):.6f}")
+            break
+        vals_mean.append(cs.mean())
+    vals_mean = np.r_[vals_mean]
+    print (f"mean value {vals_mean.mean():.4f}, std value {vals_mean.std():.4f}")
+
+    
+def run():
+    nsamples = 10
+    for dims in [2,3]:
+        print ("----------------------------------------------------")
+        print (f"-------- generating {nsamples} random {dims}D metric tensors ")
+        print ("----------------------------------------------------")
+        for _ in range(nsamples):
+            motest = MainTest(dims=dims)
+            test_metric_tensor(motest) 
+            test_christoffels(motest)
+            print()
