@@ -4,6 +4,7 @@ from torch import vmap
 from torch import nn
 import numpy as np
 from time import time
+from . import polynomials
 
 def create_symetric_matrices(z):
     """
@@ -99,7 +100,63 @@ class RiemmanianMetric(nn.Module):
         return r
     
 
-class PolynomialRiemmanianMetric(RiemmanianMetric):
+class RiemmanianMetricWithPolynomialLayers(RiemmanianMetric):
+    
+    """
+    a metric tensor in which each element is modeled by a polynomial layer.parametrized by a polynomial function on the input elemnts.
+    
+    $g_{ij}$
+    
+    $g_{ij}=\sum_{d,p}\\underset{ijdp}{C}(x^d)^p$
+
+    
+    where $g_{ij}$ is the produced metric tensor which, since it is symetric it contains k = dim*(dim+1)/2 
+    distinct elements. $d$ runs over the number of dimensions and $p$ runs over the polynomial degree.
+    
+    thus, there are k * dim * (degree + 1) parameters.
+    """
+
+    def __init__(self, input_dim, degree):
+        super().__init__()
+        self.degree     = degree
+        self.input_dim  = input_dim
+        
+        # number of distinct elements of a symmetric matrix of size n x n
+        self.size = input_dim*(input_dim+1)//2 
+
+        self.elements = polynomials.PolinomialLayerSet(size=self.size, input_dim=input_dim, degree=degree).init_layers()
+        self.jacobian = self.elements.jacobian()
+        
+        self.polynomial_parameters = nn.ParameterList([layer.C for layer in self.elements.layers])
+
+    def metric(self, x):
+        """
+        returns a metric tensor for each input element
+        """
+        is_single = False
+        if len(x.shape)==1:
+            is_single = True
+            x = x.reshape(1,-1)
+            
+        x = self.elements(x)
+        
+        # recreate symmetric metric tensors, since we only deal
+        # with matrix elements that are distinct
+        x = create_symetric_matrices(x)
+        
+        if is_single:
+            return x[0]
+        return x
+
+    def metric_derivative(self, x):
+        """
+        returns the derivatives of the metric tensor with respect to each coordinate.
+        """        
+        x = self.jacobian(x)
+        x = create_symetric_matrices(x)
+        return x
+
+class RiemmanianMetricWithBarePolynomials(RiemmanianMetric):
     
     """
     a metric tensor parametrized by a polynomial function on the input elemnts.
@@ -173,31 +230,6 @@ class PolynomialRiemmanianMetric(RiemmanianMetric):
         # recreate symmetry from metric tensors
         r = create_symetric_matrices(r)
         return r
-    
-    @classmethod
-    def test(cls):
-        print ("comparing metric derivatives analytical vs. torch.jacobian")
-        for _ in range(10):
-            degree = np.random.randint(5)+1   # polynomial degree
-            n = np.random.randint(10)+2        # manifold dimension
-            m = np.random.randint(1000)+100
-
-            print (f". degree {degree}, dim {n}, data size {m} :: ", end="", flush=True)
-            
-            x = torch.rand(size=(m,n))
-            
-            pm = cls(degree=degree, dim=x.shape[-1])
-            
-            t1 = time()
-            dm1 = pm.metric_derivative(x)
-            t2 = time()
-            dm2 = super(cls, pm).metric_derivative(x)
-            t3 = time()
-            if not torch.allclose(dm1, dm2):
-                raise ValueError("test failed")
-
-            print(f"result correct :: time analytical {t2-t1:.5f} secs, time autograd {t3-t2:.5f}, speedup x{(t3-t2)/(t2-t1):.2f}") 
-
 
 class ParametrizedRiemmanianMetric(RiemmanianMetric):
     """
