@@ -8,7 +8,7 @@ def sum_cross_diagonals(x):
     r = torch.stack([(x*(r==i)).sum() for i in range(r.max()+1)])
     return r
 
-class PolynomialLayer(nn.Module):
+class PolynomialLayer():
     
     def __init__(self, degree, input_dim, init_C=None):
         super().__init__()
@@ -18,9 +18,11 @@ class PolynomialLayer(nn.Module):
         if init_C is not None and (init_C.shape[0]!=input_dim or init_C.shape[1]!=degree+1):
             raise ValueError(f"incorrect shape for 'init_C' {init_C.shape}, expected {input_dim, degree+1}")
         
-        self.C = nn.Parameter(
-            torch.rand(size=(self.input_dim, self.degree+1)) if init_C is None else init_C
-        )
+        #self.C = nn.Parameter(
+        #    torch.rand(size=(self.input_dim, self.degree+1)) if init_C is None else init_C
+        #)
+
+        self.C = torch.rand(size=(self.input_dim, self.degree+1)) if init_C is None else init_C
 
     def forward(self, x):
         x = torch.stack([x**i for i in range(self.degree+1)])
@@ -114,7 +116,28 @@ class PolynomialLayer(nn.Module):
         
         r = self.__class__(degree=degree, input_dim=self.input_dim, init_C = C)
         return r
-    
+
+    def __sub__(self, other):
+        if self.input_dim != other.input_dim:
+            raise ValueError("can only add polinomials with the same 'input_dim'")
+        
+        selfC = self.C
+        otherC = other.C
+        
+        degree = np.max([self.degree, other.degree])
+
+        if self.degree>other.degree:
+            otherC = torch.cat([otherC.T, torch.zeros([self.degree-other.degree,self.input_dim])]).T         
+
+        if self.degree<other.degree:
+            selfC = torch.cat([selfC.T, torch.zeros([other.degree-self.degree,self.input_dim])]).T         
+
+        C = selfC - otherC
+        
+        r = self.__class__(degree=degree, input_dim=self.input_dim, init_C = C)
+        return r
+
+
     def __mul__(self, other):
 
         # detect if 'other' is a constant
@@ -218,7 +241,7 @@ class PolynomialLayerWithIndependantInputs(PolynomialLayer):
         raise NotImplementedError()
     
 
-class PolinomialLayerSet(nn.Module):
+class PolinomialLayerSet():
     
     def __init__(self, size, input_dim, degree):
         super().__init__()
@@ -245,7 +268,7 @@ class PolinomialLayerSet(nn.Module):
         return self
         
     def forward(self, x):
-        return torch.transpose(torch.stack([layer(x) for layer in self.layers]), 0,1)
+        return torch.transpose(torch.stack([layer.forward(x) for layer in self.layers]), 0,1)
 
     def jacobian(self):
         """
@@ -256,7 +279,7 @@ class PolinomialLayerSet(nn.Module):
 
     
 
-class PolynomialLayerWithIndependantInputsSet(nn.Module):
+class PolynomialLayerWithIndependantInputsSet():
 
     """
     assembles the coefficients so that we avoid looping over the layers in the set
@@ -268,9 +291,13 @@ class PolynomialLayerWithIndependantInputsSet(nn.Module):
         self.input_dim = input_dim
         self.degree = degree
         self.size = size
-        self.C = nn.Parameter(torch.rand(size=(self.size, self.input_dim, self.degree+1)))
+        self.C = torch.rand(size=(self.size, self.input_dim, self.degree+1))
         self.layers = None
    
+    def build_layers(self):
+        self.set_layers([PolynomialLayer(input_dim=self.input_dim, degree=self.degree, init_C=lC) for lC in self.C])
+        return self
+    
     def init_layers(self):
         self.layers = [PolynomialLayer(input_dim = self.input_dim, degree = self.degree) for _ in range(self.size)]
         self.C.data = torch.stack([i.C for i in self.layers])
@@ -281,10 +308,10 @@ class PolynomialLayerWithIndependantInputsSet(nn.Module):
         degrees    = [layer.degree for layer in layers]
         input_dims = [layer.input_dim for layer in layers]
         
-        if not np.allclose(*degrees):
+        if len(degrees)>1 and not np.allclose(*degrees):
             raise ValueError(f"all sublayers must have the same degree, but found {degrees}")
         
-        if not np.allclose(*input_dims):
+        if len(degrees)>1 and not np.allclose(*input_dims):
             raise ValueError(f"all sublayers must have the same input_dim, but found {input_dims}")
         
         self.degree = degrees[0]
@@ -311,12 +338,12 @@ class PolynomialLayerWithIndependantInputsSet(nn.Module):
             # for 1d inputs we do it really fast
             if self.degree==0:
                 r = self.__class__(self.size, self.input_dim, self.degree)
-                r.C.data = r.C.data*0.
+                r.C = r.C*0.
                 return r
             else:
                 r = self.__class__(self.size, self.input_dim, self.degree-1)
                 powers = torch.arange(1,self.degree+1)
-                r.C.data = (self.C[:,:,1:] * powers ).reshape(self.C[:,:,1:].shape)
+                r.C = (self.C[:,:,1:] * powers ).reshape(self.C[:,:,1:].shape)
                 return r
 
         raise ValueError("cannot compute derivative")
@@ -338,8 +365,62 @@ class PolynomialLayerWithIndependantInputsSet(nn.Module):
             return r
 
 
+    def check_op(self, other):
+        """
+        checks requirements for addition and multiplication
+        """
+        if self.input_dim != other.input_dim or \
+        self.size != other.size:
+            raise ValueError(f"multiplying {self.__class__.__name__} requires both operands to have the same size and input_dim")
+        
+        if self.layers is None:
+            self.build_layers()
+
+        if other.layers is None:
+            other.build_layers()
+
+    def __mul__(self, other):
+        
+        self.check_op(other)
+
+        mlayers = [l1*l2 for l1,l2 in zip(self.layers, other.layers)]
+        
+        r = self.__class__(self.size, self.input_dim, mlayers[0].degree).set_layers(mlayers)
+        return r
+
+    def __add__(self, other):
+        
+        self.check_op(other)
+
+        mlayers = [l1+l2 for l1,l2 in zip(self.layers, other.layers)]
+        
+        r = self.__class__(self.size, self.input_dim, mlayers[0].degree).set_layers(mlayers)
+        return r
+
+    def __sub__(self, other):
+        
+        self.check_op(other)
+
+        mlayers = [l1-l2 for l1,l2 in zip(self.layers, other.layers)]
+        
+        r = self.__class__(self.size, self.input_dim, mlayers[0].degree).set_layers(mlayers)
+        return r
+    
+    def __pow__(self, p):       
+        if p<0:
+            raise ValueError(f"invalid power {p}, must be >= 1")
+        elif p==0:
+            # for zero a single coeficient = 1
+            return self.__class__(degree=0, size=self.size, input_dim=self.input_dim, init_C=torch.ones(self.C[:,:1].shape)*1.)
+        elif p==1:
+            return self
+        else:
+            return self*pow(self, p-1)
+
+
+
     def jacobian(self):
         """
         builds a new layer set with the derivatives of all layers wrt all dims
         """
-        return PolynomialLayerWithIndependantInputsSet().set_layers([layer.jacobian() for layer in self.layers])
+        return PolynomialLayerWithIndependantInputsSet(input_dim=1, size=1, degree=1).set_layers([layer.jacobian() for layer in self.layers])

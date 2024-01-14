@@ -547,6 +547,36 @@ def test_arclen():
             print ("check failed integrating arclen infinitesimal element")
 
 
+def test_integration_by_parts():
+    
+    """
+    integral of p**2 by parts: u=p and v=\int u
+
+    \int p^2 = \int u dv = uv - \int v du
+
+    """
+    p = polynomials.PolynomialLayerWithIndependantInputsSet(size=2, input_dim=1, degree=5)
+
+    s = ((torch.rand((100,1))-0.5)*10)
+
+    u = p
+    v = p.integral()
+    
+    r1 = (u*v - (v*u.derivative()).integral()).forward(s)
+    r2 = (p*p).integral().forward(s)
+
+    return torch.allclose(r1, r2, rtol=1e-2)
+
+def run_integration_by_parts():
+    print ("---------------------------------------------------------------------------- ")
+    print ("-- testing computing \int f**2 directly and using integration by parts   --- ")
+    print ("-- which involves both integrals and derivatives                         --- ")
+    print ("---------------------------------------------------------------------------- ")
+    n = 1000
+    r = sum([test_integration_by_parts() for _ in range(n)])
+    print (f"{r} correct tests out of {n}")
+    print ("a very small fraction of tests could fail due to numerical approximations")
+
 def run_polynomial_derivatives_and_integrals():
     print ("---------------------------------------------------------------------------- ")
     print ("-- testing polynomial layer computes correctly derivatives and integrals --- ")
